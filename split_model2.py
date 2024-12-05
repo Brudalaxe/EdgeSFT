@@ -9,7 +9,7 @@ from transformers import BertModel, BertConfig
 from transformers.modeling_outputs import BaseModelOutput
 import torch.distributed.rpc as rpc
 from torch.profiler import profiler, record_function, ProfilerActivity
-from model_classes import MidiBertBack, MidiBertBackFFN, MidiBertBackFFNDecomp, MidiBertBackQuant, MidiBertBackFFNQuant, MidiBertBackFFNQuantRes, CloudWorker
+from model_classes import MidiBertBack, MidiBertBackCPU, MidiBertBackFFN, MidiBertBackFFNDecomp, MidiBertBackQuant, MidiBertBackFFNQuant, MidiBertBackFFNQuantRes, CloudWorker, CloudWorkerCPU
 
 class Embeddings(nn.Module):
     def __init__(self, n_token, d_model):
@@ -71,6 +71,10 @@ class MidiBertFront(nn.Module):
         )
 
         #output = self.classification_dropout(outputs.last_hidden_state)
+        
+        print(f"Output size: {outputs.last_hidden_state.size()}, "
+              f"dtype: {outputs.last_hidden_state.dtype}, "
+              f"Memory: {outputs.last_hidden_state.nelement() * outputs.last_hidden_state.element_size() / (1024*1024):.2f} MB")
 
         return outputs.last_hidden_state.cpu()
         #return output.cpu()
@@ -192,12 +196,12 @@ class DistMidiBert(nn.Module):
     def forward(self, input_ids, attn_mask=None):
         hidden_states = self.front_ref.rpc_sync().forward(input_ids, attn_mask)
         
-        # Measure only RPC send time
-        send_start = time.perf_counter()
+        # Measure only RPC communication time
+        start_comm = time.perf_counter()
         self.cloud_worker.rpc_sync().receive_tensor(hidden_states)
-        send_end = time.perf_counter()
-        send_time = (send_end - send_start) * 1000
-        print(f"RPC send time: {send_time:.2f} ms")
+        end_comm = time.perf_counter()
+        comm_time = (end_comm - start_comm) * 1000
+        print(f"Pure RPC communication time: {comm_time:.2f} ms")
         
         # Continue with computation
         outputs = self.cloud_worker.rpc_sync().forward(hidden_states, attn_mask)
@@ -346,6 +350,10 @@ class MidiBertFrontFFN(nn.Module):
 
         attention_output = self.split_attention(hidden_states, attention_mask)[0]
         intermediate_output = self.split_intermediate(attention_output)
+        
+        print(f"Output size: {intermediate_output.size()}, "
+              f"dtype: {intermediate_output.dtype}, "
+              f"Memory: {intermediate_output.nelement() * intermediate_output.element_size() / (1024*1024):.2f} MB")
         
         return intermediate_output.cpu()
 
@@ -614,6 +622,10 @@ class MidiBertFrontFFNDecomp(nn.Module):
         #attention_output = self.attention_layernorm(attention_output + hidden_states)
         intermediate_output = self.dense_v(attention_output)
         intermediate_output = self.dense_s(intermediate_output)
+        
+        print(f"Output size: {intermediate_output.size()}, "
+              f"dtype: {intermediate_output.dtype}, "
+              f"Memory: {intermediate_output.nelement() * intermediate_output.element_size() / (1024*1024):.2f} MB")
         
         return intermediate_output.cpu()
 
@@ -894,6 +906,10 @@ class MidiBertFrontQuant(nn.Module):
             dtype=torch.qint8
         )
         
+        print(f"Output size: {hidden_states_quantized.size()}, "
+              f"dtype: {hidden_states_quantized.dtype}, "
+              f"Memory: {hidden_states_quantized.nelement() * hidden_states_quantized.element_size() / (1024*1024):.2f} MB")
+        
         return hidden_states_quantized.cpu()
 
     def get_device(self):
@@ -1102,6 +1118,10 @@ class MidiBertFrontFFNQuant(nn.Module):
             dtype=torch.qint8
         )
         
+        print(f"Output size: {quantized_output.size()}, "
+              f"dtype: {quantized_output.dtype}, "
+              f"Memory: {quantized_output.nelement() * quantized_output.element_size() / (1024*1024):.2f} MB")
+        
         return quantized_output.cpu()
 
     def parameter_rrefs(self):
@@ -1246,6 +1266,14 @@ class MidiBertFrontFFNQuantRes(nn.Module):
             zero_point=0,
             dtype=torch.qint8
         )
+        
+        print(f"FFN output size: {quantized_ffn.size()}, "
+              f"dtype: {quantized_ffn.dtype}, "
+              f"Memory: {quantized_ffn.nelement() * quantized_ffn.element_size() / (1024*1024):.2f} MB")
+        
+        print(f"Residual output size: {quantized_residual.size()}, "
+              f"dtype: {quantized_residual.dtype}, "
+              f"Memory: {quantized_residual.nelement() * quantized_residual.element_size() / (1024*1024):.2f} MB")
         
         return (quantized_ffn.cpu(), quantized_residual.cpu())
 

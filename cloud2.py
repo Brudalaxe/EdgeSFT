@@ -25,7 +25,7 @@ def main():
     
     options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=16,
-        rpc_timeout=300,
+        rpc_timeout=600,
         init_method=f'tcp://192.168.42.236:29500',
         _transports=['uv']
     )

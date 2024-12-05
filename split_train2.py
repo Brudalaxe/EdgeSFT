@@ -64,7 +64,7 @@ def initialize_rpc():
     
     options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=16,
-        rpc_timeout=120,
+        rpc_timeout=600,
         init_method=f'tcp://192.168.42.236:29500',
         _transports=['uv']
     )
@@ -210,8 +210,9 @@ def main():
     set_seed(2021)
 
     devices = {
-        "edge": "cpu",  # Pi always uses CPU
-        "cloud": "cuda:0" #if torch.cuda.is_available() else "cpu"  # Use CUDA if available
+        "edge": "cpu",
+#        "cloud": "cpu"
+        "cloud": "cuda:0"
     }
 
     dict_path = './data/dict/CP.pkl'

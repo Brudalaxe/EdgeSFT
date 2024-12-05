@@ -16,6 +16,50 @@ def monitor_gpu():
         print(f"Memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
         print(f"Memory cached: {torch.cuda.memory_reserved()/1e9:.2f} GB")
         print(f"Max memory allocated: {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
+        
+class MidiBertBackCPU(nn.Module):
+    def __init__(self, bertConfig, split_layer):
+        super().__init__()
+        print(f"MidiBertBackCPU initializing on CPU")
+        
+        self.bert = BertModel(bertConfig)
+        self.bert.embeddings = None
+        
+        # Keep only the layers from split_layer onwards
+        original_layers = self.bert.encoder.layer
+        self.bert.encoder.layer = nn.ModuleList([
+            original_layers[i] 
+            for i in range(split_layer, len(original_layers))
+        ])
+        
+        print("\nModel device verification:")
+        print(f"Model is on: {next(self.parameters()).device}")
+        for i, layer in enumerate(self.bert.encoder.layer):
+            print(f"Layer {i} is on: {next(layer.parameters()).device}")
+
+    def forward(self, hidden_states, attn_mask=None):
+        print(f"\nMidiBertBackCPU Forward:")
+        print(f"Input tensor device: {hidden_states.device}")
+        print(f"Model device: {next(self.parameters()).device}")
+        
+        sequence_output = hidden_states
+        for i, layer in enumerate(self.bert.encoder.layer):
+            layer_outputs = layer(sequence_output, attention_mask=attn_mask)
+            sequence_output = layer_outputs[0]
+            print(f"Layer {i} output device: {sequence_output.device}")
+        
+        return BaseModelOutput(
+            last_hidden_state=sequence_output,
+            hidden_states=None
+        )
+        
+    def get_device(self):
+        # Return device of first parameter in the model
+        return next(self.parameters()).device
+
+    def parameter_rrefs(self):
+        """Create RRefs for parameters for distributed training"""
+        return [rpc.RRef(param) for param in self.parameters()]
 
 class MidiBertBack(nn.Module):
     def __init__(self, bertConfig, split_layer):
@@ -338,6 +382,64 @@ class MidiBertBackFFNQuantRes(nn.Module):
     def parameter_rrefs(self):
         return [rpc.RRef(param) for param in self.parameters()]
         
+class CloudWorkerCPU:
+    def __init__(self):
+        self.model = None
+        print("CloudWorkerCPU initialized")
+
+    def initialize_model(self, bertConfig, split_layer, model_type):
+        print(f"\nInitializing CPU model type: {model_type}")
+        
+        self.model = MidiBertBackCPU(bertConfig, split_layer)
+        print(f"Model is on device: {next(self.model.parameters()).device}")
+        return True
+
+    def forward(self, hidden_states, attn_mask=None):
+        if self.model is None:
+            raise RuntimeError("Model not initialized")
+        
+        print(f"\nCloud Worker Forward:")
+        print(f"Input tensor device: {hidden_states.device}")
+        
+        # Add profiling around the model forward pass
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU],
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        ) as prof:
+            outputs = self.model(hidden_states, attn_mask)
+        
+        print("\nCPU Operation Profiling:")
+        print(prof.key_averages().table(
+            sort_by="cpu_time_total", 
+            row_limit=30
+        ))
+        
+        return outputs
+        
+    def parameter_rrefs(self):
+        if self.model is None:
+            raise RuntimeError("Model not initialized")
+        return [rpc.RRef(p) for p in self.model.parameters()]
+
+    def load_state_dict(self, state_dict):
+        if self.model is None:
+            raise RuntimeError("Model not initialized")
+        self.model.load_state_dict(state_dict)
+        self.model.to("cuda:0")
+        
+        # Verify model is still on GPU after loading
+        print("\nModel Device Verification after loading:")
+        print(f"Model is on CUDA: {next(self.model.parameters()).is_cuda}")
+        print(f"Current Memory Usage after loading:")
+        print(torch.cuda.memory_summary())
+        return True
+    
+    def receive_tensor(self, hidden_states):
+        # Only receive tensor, no computation
+        return hidden_states
+        
 class CloudWorker:
     def __init__(self):
         self.model = None
@@ -369,8 +471,6 @@ class CloudWorker:
         else:
             print(f"Input tensor device: {hidden_states.device}")
         
-        start_receive = time.perf_counter()
-        
         # Explicitly move to cuda:0
         if isinstance(hidden_states, tuple):
             hidden_states = (hidden_states[0].to("cuda:0"), hidden_states[1].to("cuda:0"))
@@ -379,10 +479,6 @@ class CloudWorker:
             hidden_states = hidden_states.to("cuda:0")
             print(f"Hidden states moved to: {hidden_states.device}")
         
-        end_receive = time.perf_counter()
-        receive_time = (end_receive - start_receive) * 1000
-        print(f"Hidden states receive time: {receive_time:.2f} ms")
-        
         if attn_mask is not None:
             attn_mask = attn_mask.to("cuda:0")
             extended_attention_mask = attn_mask[:, None, None, :]
@@ -390,10 +486,6 @@ class CloudWorker:
             extended_attention_mask = extended_attention_mask.to("cuda:0")
         else:
             extended_attention_mask = None
-        
-        end_transfer = time.perf_counter()
-        transfer_time = (end_transfer - start_transfer) * 1000
-        print(f"Input transfer time: {transfer_time:.2f} ms")
     
         print(f"Model device before forward: {next(self.model.parameters()).device}")
         
@@ -461,3 +553,7 @@ class CloudWorker:
         print(f"Current Memory Usage after loading:")
         print(torch.cuda.memory_summary())
         return True
+    
+    def receive_tensor(self, hidden_states):
+        # Only receive tensor, no computation
+        return hidden_states

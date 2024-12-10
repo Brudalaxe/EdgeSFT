@@ -71,10 +71,6 @@ class MidiBertFront(nn.Module):
         )
 
         #output = self.classification_dropout(outputs.last_hidden_state)
-        
-        print(f"Output size: {outputs.last_hidden_state.size()}, "
-              f"dtype: {outputs.last_hidden_state.dtype}, "
-              f"Memory: {outputs.last_hidden_state.nelement() * outputs.last_hidden_state.element_size() / (1024*1024):.2f} MB")
 
         return outputs.last_hidden_state.cpu()
         #return output.cpu()
@@ -113,10 +109,10 @@ class MidiBertBack2(nn.Module):
         
         self.to(self.device)
         
-        print("\nModel device verification:")
-        print(f"Model device: {next(self.parameters()).device}")
-        for i, layer in enumerate(self.bert.encoder.layer):
-            print(f"Layer {i} device: {next(layer.parameters()).device}")
+        #print("\nModel device verification:")
+        #print(f"Model device: {next(self.parameters()).device}")
+        #for i, layer in enumerate(self.bert.encoder.layer):
+         #   print(f"Layer {i} device: {next(layer.parameters()).device}")
 
     def forward(self, hidden_states, attn_mask=None):
     
@@ -144,7 +140,6 @@ class MidiBertBack2(nn.Module):
         )
     
     def get_device(self):
-        # Return device of first parameter in the model
         return next(self.parameters()).device
 
     def parameter_rrefs(self):
@@ -175,33 +170,21 @@ class DistMidiBert(nn.Module):
             split_layer,
             model_type
         )
-        print("Cloud worker and model initialized")
+        print("Cloud worker and model initialised")
     
     '''def forward(self, input_ids, attn_mask=None):
         hidden_states = self.front_ref.rpc_sync().forward(input_ids, attn_mask)
         outputs = self.cloud_worker.rpc_sync().forward(hidden_states, attn_mask)
         return outputs'''
         
-    def forward2(self, input_ids, attn_mask=None):
-        
-        hidden_states = self.front_ref.rpc_sync().forward(input_ids, attn_mask)
-        
-        # Forward through back model
-        outputs = self.cloud_worker.rpc_sync().forward(hidden_states, attn_mask)
-        end_comm = time.perf_counter()
-        comm_time = (end_comm - start_comm) * 1000
-        print(f"Total RPC communication time: {comm_time:.2f} ms")
-        return outputs
-        
     def forward(self, input_ids, attn_mask=None):
         hidden_states = self.front_ref.rpc_sync().forward(input_ids, attn_mask)
         
-        # Measure only RPC communication time
-        start_comm = time.perf_counter()
-        self.cloud_worker.rpc_sync().receive_tensor(hidden_states)
-        end_comm = time.perf_counter()
-        comm_time = (end_comm - start_comm) * 1000
-        print(f"Pure RPC communication time: {comm_time:.2f} ms")
+        #start_comm = time.perf_counter()
+        #self.cloud_worker.rpc_sync().receive_tensor(hidden_states)
+        #end_comm = time.perf_counter()
+        #comm_time = (end_comm - start_comm) * 1000
+        #print(f"RPC communication time: {comm_time:.2f} ms")
         
         # Continue with computation
         outputs = self.cloud_worker.rpc_sync().forward(hidden_states, attn_mask)
@@ -350,10 +333,6 @@ class MidiBertFrontFFN(nn.Module):
 
         attention_output = self.split_attention(hidden_states, attention_mask)[0]
         intermediate_output = self.split_intermediate(attention_output)
-        
-        print(f"Output size: {intermediate_output.size()}, "
-              f"dtype: {intermediate_output.dtype}, "
-              f"Memory: {intermediate_output.nelement() * intermediate_output.element_size() / (1024*1024):.2f} MB")
         
         return intermediate_output.cpu()
 
@@ -622,10 +601,6 @@ class MidiBertFrontFFNDecomp(nn.Module):
         #attention_output = self.attention_layernorm(attention_output + hidden_states)
         intermediate_output = self.dense_v(attention_output)
         intermediate_output = self.dense_s(intermediate_output)
-        
-        print(f"Output size: {intermediate_output.size()}, "
-              f"dtype: {intermediate_output.dtype}, "
-              f"Memory: {intermediate_output.nelement() * intermediate_output.element_size() / (1024*1024):.2f} MB")
         
         return intermediate_output.cpu()
 
@@ -906,14 +881,9 @@ class MidiBertFrontQuant(nn.Module):
             dtype=torch.qint8
         )
         
-        print(f"Output size: {hidden_states_quantized.size()}, "
-              f"dtype: {hidden_states_quantized.dtype}, "
-              f"Memory: {hidden_states_quantized.nelement() * hidden_states_quantized.element_size() / (1024*1024):.2f} MB")
-        
         return hidden_states_quantized.cpu()
 
     def get_device(self):
-        # Return device of first parameter in the model
         return next(self.parameters()).device
 
     def parameter_rrefs(self):
@@ -1118,10 +1088,6 @@ class MidiBertFrontFFNQuant(nn.Module):
             dtype=torch.qint8
         )
         
-        print(f"Output size: {quantized_output.size()}, "
-              f"dtype: {quantized_output.dtype}, "
-              f"Memory: {quantized_output.nelement() * quantized_output.element_size() / (1024*1024):.2f} MB")
-        
         return quantized_output.cpu()
 
     def parameter_rrefs(self):
@@ -1266,14 +1232,6 @@ class MidiBertFrontFFNQuantRes(nn.Module):
             zero_point=0,
             dtype=torch.qint8
         )
-        
-        print(f"FFN output size: {quantized_ffn.size()}, "
-              f"dtype: {quantized_ffn.dtype}, "
-              f"Memory: {quantized_ffn.nelement() * quantized_ffn.element_size() / (1024*1024):.2f} MB")
-        
-        print(f"Residual output size: {quantized_residual.size()}, "
-              f"dtype: {quantized_residual.dtype}, "
-              f"Memory: {quantized_residual.nelement() * quantized_residual.element_size() / (1024*1024):.2f} MB")
         
         return (quantized_ffn.cpu(), quantized_residual.cpu())
 

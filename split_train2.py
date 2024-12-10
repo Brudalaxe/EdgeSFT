@@ -1,5 +1,5 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress all but critical errors
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import time
 import torch
 import torch.distributed.rpc as rpc
@@ -39,7 +39,7 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--lr', type=float, default=2e-5)
-    parser.add_argument('--split_layer', type=int, default=0)
+    parser.add_argument('--split_layer', type=int, default=4)
     args = parser.parse_args()
     
     return args
@@ -52,15 +52,14 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 def initialize_rpc():
-    # Clear environment
     os.environ.clear()
     
-    os.environ['MASTER_ADDR'] = '192.168.42.236'  # Pi's IP
+    os.environ['MASTER_ADDR'] = '192.168.42.236'
     os.environ['MASTER_PORT'] = '29500'
     os.environ['TP_SOCKET_IFNAME'] = 'wlan0'
     os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
 
-    logging.info("Initializing edge node...")
+    logging.info("Initialising edge node...")
     
     options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=16,
@@ -72,18 +71,18 @@ def initialize_rpc():
     options.set_device_map("cloud", {"cpu": "cpu"})
 
     try:
-        logging.info("Starting RPC initialization...")
+        logging.info("Starting RPC initialisation...")
         rpc.init_rpc(
             "edge",
             rank=0,
             world_size=2,
             rpc_backend_options=options
         )
-        logging.info("Edge RPC initialized successfully")
+        logging.info("Edge RPC initialised successfully")
         return True
         
     except Exception as e:
-        logging.error(f"RPC initialization failed: {str(e)}")
+        logging.error(f"RPC initialisation failed: {str(e)}")
         raise
         
 def load_model_and_classifier_v2(model_choice, checkpoint_path, bertConfig, e2w, w2e, split_layer, devices):
@@ -104,7 +103,6 @@ def load_model_and_classifier_v2(model_choice, checkpoint_path, bertConfig, e2w,
 
     print(f"Using {model_mapping[model_choice]['name']} model")
     
-    # Load the models using the appropriate loader function
     front_model, back_model = model_mapping[model_choice]["loader"](
         checkpoint_path, 
         bertConfig, 
@@ -113,7 +111,6 @@ def load_model_and_classifier_v2(model_choice, checkpoint_path, bertConfig, e2w,
         split_layer
     )
 
-    # Initialize the classifier with model_type
     classifier = DistMidiBert(
         devices=devices,
         bertConfig=bertConfig,
@@ -191,27 +188,10 @@ def main():
         6: {"name": "Split Fine-tuning with Quantisation and Residual", "group": "split_finetuning_ffnquantres"}
     }
 
-    #wandb.init(
-     #   project="MidiBert_SFT",
-      #  group=model_mapping[model_choice]["group"],
-       # name=f"run_{model_mapping[model_choice]['name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        #config={
-         #   "model_type": model_mapping[model_choice]["name"],
-          #  "split_layer": args.split_layer,
-           # "learning_rate": 2e-5,
-            #"batch_size": args.batch_size,
-    #        "epochs": args.epochs,
-     #       "model": "BERT-Base",
-      #      "task": args.task,
-       #     "architecture": args.name
-        #}
-    #)
-
     set_seed(2021)
 
     devices = {
         "edge": "cpu",
-#        "cloud": "cpu"
         "cloud": "cuda:0"
     }
 
@@ -244,37 +224,6 @@ def main():
     )
     
     classifier.load_state_dict(front_model.state_dict(), back_state_dict)
-
-    #classifier.front_ref.rpc_sync().load_state_dict(front_model.state_dict())
-    #classifier.back_ref.rpc_sync().load_state_dict(back_model.state_dict())
-    #classifier.back_ref.rpc_sync().to("cuda:0")
-
-    #wandb.define_metric("train_accuracy", summary="max")
-    #wandb.define_metric("val_accuracy", summary="max")
-    #wandb.define_metric("test_accuracy", summary="max")
-
-    print(f"\nFront part of MidiBERT is on device: {devices['edge']}")
-    print(f"Back part of MidiBERT is on device: {devices['cloud']}")
-
-    print("\nListing all layers:")
-    
-    print("Front part layers (on edge):")
-    
-    print(f"Embedding Layer -> Device: {devices['edge']}")
-
-    for i in range(len(front_model.bert.encoder.layer)):
-        print(f"Encoder Layer {i+1} -> Device: {devices['edge']}")
-        
-    #print("\nBack part layers (on cloud):")
-    # Get number of back layers through RPC
-    #num_back_layers = classifier.cloud_worker.rpc_sync().get_num_layers()
-    #for i in range(num_back_layers):
-     #   print(f"Encoder Layer {split_layer + i + 1} -> Device: cuda:0")
-
-    #print("\nBack part layers (on cloud):")
-
-    #for i in range(len(back_model.bert.encoder.layer)):
-     #   print(f"Encoder Layer {split_layer + i + 1} -> Device: {devices['cloud']}")
 
     class Args:
         def __init__(self):
@@ -323,62 +272,31 @@ def main():
         trace_dir = f"./runs/{model_choice}_{args.split_layer}"
         os.makedirs(trace_dir, exist_ok=True)
 
-        with profiler.profile(
-                activities=[
-                    profiler.ProfilerActivity.CPU,
-                    profiler.ProfilerActivity.CUDA,
-                ],
-                schedule=profiler.schedule(
-                    wait=1,
-                    warmup=1,
-                    active=3,
-                    repeat=1
-                ),
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=True,
-                with_modules=True,
-                with_flops=True
-            ) as prof:
-                with tqdm(train_loader, desc=f"  Training") as train_tqdm:
-                    for i, batch in enumerate(train_tqdm):
-                        batch_input_ids = batch[0]
-                        batch_attention_mask = torch.ones(batch_input_ids.shape[:2])
-                        y_true = batch[1].to(devices["edge"])
+        with tqdm(train_loader, desc=f"  Training") as train_tqdm:
+            for i, batch in enumerate(train_tqdm):
+                batch_input_ids = batch[0]
+                batch_attention_mask = torch.ones(batch_input_ids.shape[:2])
+                y_true = batch[1].to(devices["edge"])
 
-                        with dist_autograd.context() as context_id:
-                            outputs = classifier(input_ids=batch_input_ids,
-                                                attn_mask=batch_attention_mask)
-                            print(f"Output device: {outputs.last_hidden_state.device}")
-                            y_pred = outputs.last_hidden_state.mean(dim=1)#.to(devices["edge"])
-                            print(f"Prediction device: {y_pred.device}")
-                            loss = criterion(y_pred, y_true)
+                with dist_autograd.context() as context_id:
+                    outputs = classifier(input_ids=batch_input_ids,
+                                        attn_mask=batch_attention_mask)
+                    y_pred = outputs.last_hidden_state.mean(dim=1)
+                    loss = criterion(y_pred, y_true)
 
-                            dist_autograd.backward(context_id, [loss])
-                            
-                            opt.step(context_id)
-                        
-                            predictions = torch.argmax(y_pred, dim=-1)
-                            correct = torch.eq(predictions, y_true).sum().item()
-                            total = batch_input_ids.size(0)
-                            
-                            #wandb.log({
-                             #   "train/loss": loss.item(),
-                              #  "train/accuracy": correct/total,
-                               # "train/step": i + epoch * len(train_loader)
-                            #})
+                    dist_autograd.backward(context_id, [loss])
+                    
+                    opt.step(context_id)
+                
+                    predictions = torch.argmax(y_pred, dim=-1)
+                    correct = torch.eq(predictions, y_true).sum().item()
+                    total = batch_input_ids.size(0)
 
-                            total_train_loss += loss.item() * total
-                            correct_train_predictions_total += correct
-                            total_train_samples += total
+                    total_train_loss += loss.item() * total
+                    correct_train_predictions_total += correct
+                    total_train_samples += total
 
-                        train_tqdm.set_postfix({"Loss": loss.item()})
-
-                        prof.step()
-
-                        if i == 4:
-                            prof.export_chrome_trace(f"./runs/{model_choice}_{args.split_layer}/trace_{epoch}.json")
-                            print("\nProfiling results from initial iterations saved to log file")
+                train_tqdm.set_postfix({"Loss": loss.item()})
 
         final_train_loss_total = (total_train_loss / total_train_samples)
         final_train_accuracy = (correct_train_predictions_total / total_train_samples)
@@ -410,14 +328,6 @@ def main():
 
         final_valid_loss_total = valid_loss_total / len(valid_loader.dataset)
         final_valid_accuracy = (correct_val_predictions_total / len(valid_loader.dataset))
-
-        #wandb.log({
-         #   "epoch": epoch,
-          #  "train/epoch_loss": final_train_loss_total,
-           # "train/epoch_accuracy": final_train_accuracy,
-            #"val/loss": final_valid_loss_total,
-        #    "val/accuracy": final_valid_accuracy,
-        #})
         
         clear_memory()
 
@@ -466,51 +376,17 @@ def main():
             'test_loss': final_test_loss_total
         }
 
-        #try:
-            # Save regular checkpoint
-            #save_split_checkpoint(
-            #    classifier, 
-            #    opt, 
-            #    epoch,
-            #    metrics,
-            #    os.path.join(save_dir_epoch_specific, 'last_model.pt')
-            #)
-            
-            # Save best model
         if final_valid_accuracy > best_valid_acc:
             best_valid_acc = final_valid_accuracy
             patience_counter = 0
-            #wandb.run.summary["best_accuracy"] = final_valid_accuracy
-                #save_split_checkpoint(
-                #    classifier,
-                #    opt,
-                #    epoch,
-                #    metrics,
-                #    os.path.join(save_dir_epoch_specific, 'best_model.pt')
-                #)
-            print(f"New best validation accuracy:{best_valid_acc:.4f} - Saving model checkpoint")
+            print(f"New best validation accuracy:{best_valid_acc:.4f}")
         else:
             patience_counter += 1
             print(f"No improvement in validation accuracy - Patience Counter:{patience_counter}/{patience_limit}")
-                
-        #except Exception as e:
-        #    print(f"Warning: Failed to save checkpoints: {str(e)}")
-        #    print("Continuing training without saving...")
         
         if patience_counter>=patience_limit:
             print(f"Early stopping triggered after epoch:{epoch+1}")
             break
-
-    # Calculate and print total training time
-    training_end_time = time.perf_counter()
-    total_training_time = training_end_time - training_start_time
-
-    # Convert to hours, minutes, seconds
-    hours = int(total_training_time // 3600)
-    minutes = int((total_training_time % 3600) // 60)
-    seconds = total_training_time % 60
-
-    print(f"\nTotal training time: {hours}h {minutes}m {seconds:.2f}s")
 
 if __name__ == "__main__":
    main()

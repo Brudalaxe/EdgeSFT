@@ -3,7 +3,6 @@ import torch.distributed.rpc as rpc
 import os
 import logging
 from model_classes import CloudWorker, MidiBertBack
-#from split_model2 import MidiBertBack
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -21,7 +20,7 @@ def main():
     
     device = torch.device("cuda:0")
 
-    logging.info("Initializing cloud node...")
+    logging.info("Initialising cloud node...")
     
     options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=16,
@@ -33,19 +32,17 @@ def main():
     options.set_device_map("edge", {"cpu": "cpu"})
 
     try:
-        logging.info("Starting RPC initialization...")
+        logging.info("Starting RPC initialisation...")
         rpc.init_rpc(
             "cloud",
             rank=1,
             world_size=2,
             rpc_backend_options=options
         )
-        logging.info("Cloud RPC initialized successfully")
+        logging.info("Cloud RPC initialised successfully")
         
-        # Create the worker instance
         worker = CloudWorker()
         
-        # Keep the process running
         while True:
             pass
             
